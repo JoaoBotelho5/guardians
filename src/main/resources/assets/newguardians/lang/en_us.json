@@ -1,0 +1,12 @@
+{
+  "itemGroup.newguardians": "New Guardians",
+  "entity.newguardians.guard": "Guardian",
+  "item.newguardians.guard_spawn_item": "Guardian Soul",
+  "item.newguardians.guard_cage": "Cage",
+  "item.newguardians.guard_cage_filled": "Soul Cage",
+  "item.newguardians.guard_cage.capture_hint": "Shift Right-click a guard to store and link it",
+  "item.newguardians.guard_cage.soul_linked": "Soul Linked",
+  "item.newguardians.guard_cage_filled.soul_linked": "Soul Linked",
+  "item.newguardians.guard_cage_filled.cooldown": "Cooldown: %ss remaining",
+  "item.newguardians.guard_cage_filled.spawn_hint": "Right-click a block to spawn the guardian"
+}

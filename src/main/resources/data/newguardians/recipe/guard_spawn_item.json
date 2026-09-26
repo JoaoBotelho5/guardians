@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "FEF",
+    "GDG",
+    "FEF"
+  ],
+  "key": {
+    "F": {
+      "item": "minecraft:rotten_flesh"
+    },
+    "E": {
+      "item": "minecraft:ender_pearl"
+    },
+    "G": {
+      "item": "minecraft:emerald"
+    },
+    "D": {
+      "item": "minecraft:diamond"
+    }
+  },
+  "result": {
+    "id": "newguardians:guard_spawn_item",
+    "count": 1
+  }
+}
