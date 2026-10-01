@@ -6,7 +6,6 @@ import com.Guardians.newguardians.registry.ModAttachments;
 import com.Guardians.newguardians.registry.ModItems;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
@@ -16,7 +15,6 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
-import net.minecraft.world.item.component.Unbreakable;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleMenuProvider;
@@ -49,6 +47,7 @@ import net.minecraft.world.entity.ai.goal.RangedBowAttackGoal;
 import net.minecraft.world.entity.ai.goal.RangedCrossbowAttackGoal;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
 import net.minecraft.world.entity.monster.CrossbowAttackMob;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.EnderMan;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.monster.RangedAttackMob;
@@ -65,6 +64,7 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -74,7 +74,7 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
     private static final EntityDataAccessor<Boolean> DATA_CHARGING_CROSSBOW =
             SynchedEntityData.defineId(Guard.class, EntityDataSerializers.BOOLEAN);
 
-    private static final double MAX_HEALTH_PER_LEVEL = 4.0D;
+    private static final double MAX_HEALTH_PER_LEVEL = 2.0D;
     private static final double BASE_MAX_HEALTH = 30.0D;
     /** XP por ponto de vida máxima do inimigo morto: 4 HP de vida máxima = 1 XP (zombie 20 HP -> 5 XP). */
     private static final float XP_PER_MAX_HEALTH = 4.0F;
@@ -97,7 +97,7 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
     private static final int AGGRO_INTERVAL = 10;
 
     // Bloqueio passivo: com um escudo na offhand, 50% de hipótese de bloquear o dano recebido
-    private static final float SHIELD_BLOCK_CHANCE = 0.5F;
+    private static final float SHIELD_BLOCK_CHANCE = 0.25F;
 
     // Regeneração passiva: mais rápida em combate, e +1 HP por regen a cada 5 níveis
     private static final int REGEN_INTERVAL_OUT_OF_COMBAT = 100; // 5s
@@ -137,6 +137,8 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
     private UUID ownerId;
     /** 0 = nenhum upgrade; 1-3 = nível de upgrade comprado com "UP" na GuardEquipmentScreen. */
     private int upgradeLevel = 0;
+    /** Dano "congelado" no momento em que cada peça foi equipada; reforçado todo tick em maintainFrozenDurability(). */
+    private final EnumMap<EquipmentSlot, Integer> frozenDamage = new EnumMap<>(EquipmentSlot.class);
 
     public Guard(EntityType<? extends Guard> type, Level level) {
         super(type, level);
@@ -170,7 +172,8 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
         this.goalSelector.addGoal(5, new LookAtPlayerGoal(this, Player.class, 8.0F));
         this.goalSelector.addGoal(6, new RandomLookAroundGoal(this));
 
-        this.targetSelector.addGoal(1, new NearestAttackableTargetGoal<>(this, Monster.class, true));
+        this.targetSelector.addGoal(1, new NearestAttackableTargetGoal<>(this, Monster.class, 10, true, false,
+                m -> !(m instanceof Creeper)));
     }
 
     @Override
@@ -319,7 +322,7 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
                 return false;
             }
         }
-        if (attacker instanceof LivingEntity livingAttacker && !hasLiveTarget()) {
+        if (attacker instanceof LivingEntity livingAttacker && !(livingAttacker instanceof Creeper) && !hasLiveTarget()) {
             this.setTarget(livingAttacker);
         }
         if (canBlockWithOffhandShield(source) && this.random.nextFloat() < SHIELD_BLOCK_CHANCE) {
@@ -353,19 +356,19 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
     }
 
     /**
-     * Se o guard estiver "soul linked", tenta devolver a alma (com equipamento) à cage vazia
-     * exata de onde saiu, no inventário de quem a tiver, em vez de morrer de vez. Só evita
-     * largar o equipamento no chão se essa cage for encontrada (senão morre normalmente).
+     * Se o guard estiver "soul linked", a alma (com equipamento) fica guardada no SavedData e a
+     * cage vazia ligada converte-se para cheia assim que for vista pelo servidor (ver
+     * SoulCageRecovery). O equipamento não cai no chão: vai na alma.
      */
     @Override
     public void die(DamageSource damageSource) {
-        if (!this.level().isClientSide && this.level() instanceof ServerLevel serverLevel
+        if (!this.level().isClientSide
+                && !this.isRemoved() && !this.dead   // evita gravar duas vezes (a segunda já sem equipamento)
+                && this.level() instanceof ServerLevel serverLevel
                 && this.soulLinkedCageId != null) {
-            boolean returned = GuardCageItem.returnSoulToLinkedCage(serverLevel, this, this.soulLinkedCageId);
-            if (returned) {
-                for (EquipmentSlot slot : GuardEquipmentMenu.SLOTS) {
-                    this.setItemSlot(slot, ItemStack.EMPTY);
-                }
+            GuardCageItem.returnSoulToLinkedCage(serverLevel, this, this.soulLinkedCageId);
+            for (EquipmentSlot slot : GuardEquipmentMenu.SLOTS) {
+                this.setItemSlot(slot, ItemStack.EMPTY);
             }
         }
         super.die(damageSource);
@@ -416,17 +419,39 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
     }
 
     /**
-     * Qualquer item equipado (armadura, mainhand, offhand) fica marcado como Unbreakable assim que
-     * entra num slot do guard — nunca perde durabilidade nem parte, seja por combate, disparo, etc.
+     * Qualquer item equipado (armadura, mainhand, offhand) fica com a durabilidade que tinha no
+     * momento do equip: não fica reparado, mas também nunca se gasta mais nem parte, seja por
+     * combate, disparo, etc. — maintainFrozenDurability() (chamado todo tick) repõe o valor.
      * Cobre tanto o equipamento inicial como qualquer troca feita na GuardEquipmentScreen (que passa
      * sempre por aqui via GuardEquipmentContainer.setItem).
      */
     @Override
     public void setItemSlot(EquipmentSlot slot, ItemStack stack) {
-        if (!stack.isEmpty()) {
-            stack.set(DataComponents.UNBREAKABLE, new Unbreakable(false));
-        }
         super.setItemSlot(slot, stack);
+        if (!stack.isEmpty() && stack.isDamageableItem()) {
+            this.frozenDamage.put(slot, stack.getDamageValue());
+        } else {
+            this.frozenDamage.remove(slot);
+        }
+    }
+
+    /** Reforça todo tick (server-side) o valor de dano congelado de cada peça equipada, anulando
+     *  qualquer hurtAndBreak que o combate/disparo tenha aplicado entretanto. */
+    private void maintainFrozenDurability() {
+        for (EquipmentSlot slot : GuardEquipmentMenu.SLOTS) {
+            Integer frozen = this.frozenDamage.get(slot);
+            if (frozen == null) {
+                continue;
+            }
+            ItemStack stack = this.getItemBySlot(slot);
+            if (stack.isEmpty() || !stack.isDamageableItem()) {
+                this.frozenDamage.remove(slot);
+                continue;
+            }
+            if (stack.getDamageValue() != frozen) {
+                stack.setDamageValue(frozen);
+            }
+        }
     }
 
     /** Guards do mesmo dono nunca se atacam entre si, seja qual for a forma como o alvo foi definido
@@ -550,6 +575,16 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
         this.upgradeLevel = tag.contains(UPGRADE_LEVEL_TAG, Tag.TAG_INT) ? tag.getInt(UPGRADE_LEVEL_TAG) : 0;
         // a restrição do Mob não é guardada pelo vanilla, reaplica
         applyMode();
+        // O equipamento é lido direto do NBT (não passa por setItemSlot), por isso o dano
+        // congelado tem de ser reposto aqui: senão, depois de reinvocar da cage ou recarregar
+        // o chunk, nada ficava congelado até alguém re-equipar a peça.
+        this.frozenDamage.clear();
+        for (EquipmentSlot slot : GuardEquipmentMenu.SLOTS) {
+            ItemStack equipped = this.getItemBySlot(slot);
+            if (!equipped.isEmpty() && equipped.isDamageableItem()) {
+                this.frozenDamage.put(slot, equipped.getDamageValue());
+            }
+        }
     }
 
     private static void writePos(CompoundTag tag, String key, @Nullable BlockPos pos) {
@@ -586,6 +621,7 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
             attractHostileMobs();
             regenerateHealth();
             maintainUpgradeEffects();
+            maintainFrozenDurability();
         }
     }
 
@@ -708,8 +744,12 @@ public class Guard extends PathfinderMob implements RangedAttackMob, CrossbowAtt
         }
     }
 
-    /** Neutros só atacam se provocados — exceto enderman e zombified piglin. */
+    /** Neutros só atacam se provocados — exceto enderman e zombified piglin. Creeper nunca entra
+     *  nesta guerra (nem o guard o provoca, nem ele conta como agressor). */
     private static boolean isEligibleAggressor(Monster m) {
+        if (m instanceof Creeper) {
+            return false;
+        }
         return !(m instanceof NeutralMob) || m instanceof EnderMan || m instanceof ZombifiedPiglin;
     }
 

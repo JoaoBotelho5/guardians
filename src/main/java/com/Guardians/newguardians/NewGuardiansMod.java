@@ -32,6 +32,7 @@ public class NewGuardiansMod {
         modEventBus.addListener(this::commonSetup);
 
         NeoForge.EVENT_BUS.register(new GuardCombatHandler());
+        NeoForge.EVENT_BUS.register(new com.Guardians.newguardians.event.SoulCageRecovery());
 
         if (FMLEnvironment.dist == Dist.CLIENT) {
             modEventBus.addListener(NewGuardiansModClient::onRegisterRenderers);

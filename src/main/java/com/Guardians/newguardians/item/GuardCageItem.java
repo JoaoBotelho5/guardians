@@ -1,7 +1,9 @@
 package com.Guardians.newguardians.item;
 
+import com.Guardians.newguardians.client.data.PendingSoulsData;
 import com.Guardians.newguardians.entity.Guard;
 import com.Guardians.newguardians.entity.GuardMode;
+import com.Guardians.newguardians.event.SoulCageRecovery;
 import com.Guardians.newguardians.registry.ModEntities;
 import com.Guardians.newguardians.registry.ModItems;
 import net.minecraft.ChatFormatting;
@@ -10,13 +12,12 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -178,29 +179,42 @@ public class GuardCageItem extends Item {
     }
 
     /**
-     * Chamado quando um guard "soul linked" morre. Procura, no inventário de qualquer jogador
-     * online, a cage vazia exata com o mesmo GuardLinkId e transforma-a (no próprio slot, sem
-     * criar item novo) na cage cheia com os dados do guard, incluindo equipamento. O cooldown
-     * é gravado na própria stack (não no Item), por isso só afeta esta cage — as outras cages
-     * do mesmo jogador continuam disponíveis normalmente. Devolve true se encontrou.
+     * Chamado quando um guard "soul linked" morre. A alma (já com o cooldown de agora) fica
+     * guardada no SavedData; a cage vazia ligada converte-se para cheia assim que o servidor
+     * a "vir" (ver SoulCageRecovery). Nunca falha, por isso o guard nunca se perde.
      */
     public static boolean returnSoulToLinkedCage(ServerLevel level, Guard guard, UUID linkId) {
-        for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
-            Inventory inventory = player.getInventory();
-            for (int i = 0; i < inventory.getContainerSize(); i++) {
-                ItemStack stack = inventory.getItem(i);
-                if (stack.is(ModItems.GUARD_CAGE.get()) && linkId.equals(getLinkId(stack))) {
-                    inventory.setItem(i, buildFilledCage(level, guard, linkId));
-                    return true;
-                }
-            }
-        }
-        return false;
+        MinecraftServer server = level.getServer();
+        PendingSoulsData.get(server).put(linkId, buildSoulData(level, guard, linkId));
+        // Caso comum: a cage está no inventário / menu aberto de alguém online -> converte já.
+        SoulCageRecovery.scanOnlinePlayers(server);
+        return true;
     }
 
-    /** A alma volta com a vida cheia (o guard estava morto ao ser gravado, por isso o Health
-     *  bruto do NBT tem de ser reposto ao máximo — senão o guard carrega já morto ao reinvocar). */
-    private static ItemStack buildFilledCage(ServerLevel level, Guard guard, UUID linkId) {
+    /**
+     * Se `stack` for uma cage vazia ligada a uma alma pendente, consome a alma e devolve a cage
+     * cheia que a substitui; caso contrário devolve null.
+     */
+    @Nullable
+    public static ItemStack recoverSoul(MinecraftServer server, ItemStack stack) {
+        if (!stack.is(ModItems.GUARD_CAGE.get())) {
+            return null;
+        }
+        UUID linkId = getLinkId(stack);
+        if (linkId == null) {
+            return null;
+        }
+        CompoundTag soulData = PendingSoulsData.get(server).take(linkId);
+        if (soulData == null) {
+            return null;
+        }
+        ItemStack filledStack = new ItemStack(ModItems.GUARD_CAGE_FILLED.get());
+        filledStack.set(DataComponents.CUSTOM_DATA, CustomData.of(soulData));
+        return filledStack;
+    }
+
+    /** Dados da cage cheia no momento da morte: vida cheia, equipamento, e cooldown a começar agora. */
+    private static CompoundTag buildSoulData(ServerLevel level, Guard guard, UUID linkId) {
         CompoundTag entityData = new CompoundTag();
         guard.saveWithoutId(entityData);
         int maxHealth = (int) Math.ceil(guard.getMaxHealth());
@@ -213,10 +227,7 @@ public class GuardCageItem extends Item {
         customData.putInt(GUARD_MAX_HEALTH_KEY, maxHealth);
         customData.putUUID(GUARD_LINK_KEY, linkId);
         customData.putLong(GUARD_COOLDOWN_END_KEY, level.getGameTime() + SOUL_COOLDOWN_TICKS);
-
-        ItemStack filledStack = new ItemStack(ModItems.GUARD_CAGE_FILLED.get());
-        filledStack.set(DataComponents.CUSTOM_DATA, CustomData.of(customData));
-        return filledStack;
+        return customData;
     }
 
     /** Consome 1 do stack original e devolve o item resultante ao jogador. */
